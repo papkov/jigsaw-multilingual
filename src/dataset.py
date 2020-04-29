@@ -5,6 +5,8 @@ import torch.utils.data as D
 import pandas as pd
 import numpy as np
 
+from torch.utils.data.sampler import SubsetRandomSampler, WeightedRandomSampler
+
 
 class Dataset(D.Dataset):
     def __init__(self, fn):
@@ -13,48 +15,23 @@ class Dataset(D.Dataset):
         self.dataset = np.load(fn)
         self.x = self.dataset['x']
         self.y = self.dataset['y']
+        self.attention_mask = self.dataset['attention_mask']
         
-    def process(self, x, y):
-        return x, y
+    def process(self, x):
+        return x
         
     def __getitem__(self, i):
-        x, y = self.x[i], self.y[i]
-        return self.process(x, y)
+        x, am, y = self.x[i], self.attention_mask[i], self.y[i]
+        x = self.process(x)
+        return x, am, y
     
     def __len__(self):
         return len(self.y)
     
+    def weighted_sampler(self):
+        labels, counts = np.unique(self.y, return_counts=True)
+        weights = counts[::-1] / counts.sum()
+        weights = np.array([weights[i] for i in self.y])
+        return WeightedRandomSampler(weights, int(counts.min() * 2))
     
-class BaseAugmentation:
-    def __init__(self, p=0.5, bos_token=0, pad_token=1, eos_token=2, dot_token=5):
-        self.bos_token = bos_token
-        self.pad_token = pad_token
-        self.eos_token = eos_token
-        self.dot_token = dot_token
-        self.p = p
     
-    def __call__(self, *args, **kwargs):
-        raise NotImplementedError
-        
-
-class ShuffleSentences(BaseAugmentation):
-    """
-    Shuffles sentences after splitting by dot token
-    """
-        
-    def __call__(self, sent):
-        new_sent = sent.copy()
-        
-        if np.random.uniform() < self.p:
-            # Mask meaningful part of a sentence
-            mask = (sent != self.bos_token) & (sent != self.pad_token) & (sent != self.eos_token)
-            # Localize dots
-            # TODO: a smatrer way to split?
-            dots = np.where(sent == self.dot_token)[0]
-            # Split by dot localization, shuffle
-            split = np.split(sent[mask], dots)
-            np.random.shuffle(split)
-            # Concatenate back and paste
-            new_sent[mask] = np.concatenate(split)
-        
-        return new_sent
