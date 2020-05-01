@@ -30,7 +30,7 @@ class Model(nn.Module):
         pool_avg = torch.mean(x, 1)
         pool_max, _ = torch.max(x, 1)
         
-        x = torch.cat((apool, mpool), 1)
+        x = torch.cat((pool_avg, pool_max), 1)
         x = self.dropout(x)
         x = self.linear(x)
         

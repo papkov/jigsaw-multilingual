@@ -23,7 +23,7 @@ class Dataset(D.Dataset):
     def __getitem__(self, i):
         x, am, y = self.x[i], self.attention_mask[i], self.y[i]
         x = self.process(x)
-        return x, am, y
+        return x, y, am
     
     def __len__(self):
         return len(self.y)
