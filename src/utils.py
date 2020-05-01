@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import os
 
-def seed_everything(seed):
+def seed_everything(seed=54):
     """https://www.kaggle.com/shonenkov/tpu-inference-super-fast-xlmroberta"""
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)

@@ -50,6 +50,18 @@ class Meter:
         return is_best
 
 
+class DenseCrossEntropy(nn.Module):
+    """Cross-entropy for one-hot encoded targets"""
+    def forward(self, x, target):
+        x = x.float()
+        target = target.float()
+        logprobs = torch.nn.functional.log_softmax(x, dim=-1)
+
+        loss = -logprobs * target
+        loss = loss.sum(-1)
+        return loss.mean()
+
+
 class Trainer(nn.Module):
     def __init__(self, name, model, loader_train, loader_valid, loader_test=None, epochs=5, monitor='val_loss', **kwargs):
         super().__init__()
@@ -68,14 +80,17 @@ class Trainer(nn.Module):
         # Optimization
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-5) if 'optimizer' not in kwargs else kwargs['optimizer']
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs, eta_min=0, last_epoch=-1) if 'scheduler' not in kwargs else kwargs['scheduler'](self.optimizer)
-        self.criterion = torch.nn.CrossEntropyLoss() if 'criterion' not in kwargs else kwargs['criterion']
+        self.criterion = DenseCrossEntropy() if 'criterion' not in kwargs else kwargs['criterion']
 
         self.meters = {m:Meter(m) for m in ['loss', 'val_loss', 'val_acc']}
 
 
-    def forward(self, x, y, *args):
+    def forward(self, x, y, attention_masks, *args):
         """Compute loss"""
-        output = self.model(x.cuda())
+        output = self.model(x.cuda(), attention_masks.cuda(), *args)
+        if self.model.mix:
+            # mix y if model performed mixup
+            y = self.model.mixup.mix_y(y)
         loss = self.criterion(output, y.cuda())
         return output, loss
 

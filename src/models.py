@@ -20,12 +20,10 @@ class Model(nn.Module):
         batch_size, max_len = input_ids.shape
         x, _ = self.backbone(input_ids=input_ids, attention_mask=attention_masks)
         
-        idx = None
-        lam = None
         # use mixup only if provided and when training
         # TODO: before of after pooling?
         if self.mix and self.training:
-            x, idx, lam = self.mixup(x)
+            x = self.mixup(x)
         
         pool_avg = torch.mean(x, 1)
         pool_max, _ = torch.max(x, 1)
@@ -34,28 +32,46 @@ class Model(nn.Module):
         x = self.dropout(x)
         x = self.linear(x)
         
-        return x, idx, lam
+        return x
     
 
 class Mixup:
     def __init__(self, alpha=0.4):
+        self.idx = None
+        self.lam = None
         self.set_alpha(alpha)
     
     def set_alpha(self, alpha):
         self.beta = torch.distributions.beta.Beta(alpha, alpha)
         
     def __call__(self, x):
-        # Permute x in batch anong 0th axis
         bs = x.shape[0]
         idx = torch.randperm(bs)
-        x_permuted = x[idx]
-        # sample lambda, ensure that all the elements are > 0.5
+
+        # sample lambda
         lam = self.beta.sample(torch.tensor([bs]))
+        # ensure that all the elements are > 0.5
         lam, _ = torch.stack([lam, 1-lam], 0).max(0)
-        lam = lam[..., None]
-        # mix x and its permuted version
-        x_permuted = x * lam + x_permuted * (1-lam)
+        # unsqueeze lam to match x shape in other dimensions (except batch) 
+        for i, s in enumerate(x.shape[1:]):
+            lam.unsqueeze_(-1)
         
-        # return everything for mixing labels as well
-        return x_permuted, idx, lam
+        # store last idx and lam for mixing y
+        self.idx = idx
+        self.lam = lam.squeeze()
+
+        # mix x and its permuted version
+        lamd = lam.to(x.device)
+        return x * lamd + x[idx] * (1-lamd)
+
+    def mix_y(self, y):
+        if self.lam is None:
+            raise ValueError
+        
+        # unsqueeze lam to match y shape in other dimensions (except batch)
+        for i, s in enumerate(y.shape[1:]):
+            self.lam.unsqueeze_(-1)
+
+        lamd = self.lam.to(y.device)
+        return y * lamd + y[self.idx] * (1-lamd)
         
