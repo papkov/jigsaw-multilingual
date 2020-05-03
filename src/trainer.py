@@ -29,8 +29,8 @@ class Meter:
         self.sum = 0
         self.avg = 0
         self.last = 0
-        self.min = 0
-        self.max = 0
+        self.min = np.inf
+        self.max = -np.inf
         self.extremum = ''
 
     def add(self, value):
@@ -70,7 +70,7 @@ class DenseCrossEntropy(nn.Module):
 
 
 class Trainer(nn.Module):
-    def __init__(self, name, model, loader_train, loader_valid, loader_test=None, epochs=5, monitor='val_loss', checkpoint_path='../checkpoints/', **kwargs):
+    def __init__(self, name, model, loader_train, loader_valid, loader_test=None, epochs=5, gradient_accumulation=4, monitor='val_loss', checkpoint_path='../checkpoints/', **kwargs):
         super().__init__()
         self.name = name
         self.model = model
@@ -84,6 +84,10 @@ class Trainer(nn.Module):
         self.loader_train = loader_train
         self.loader_valid = loader_valid
         self.loader_test = loader_test
+
+        # Gradient accumutation
+        # TODO sync normalization
+        self.gradient_accumulation = gradient_accumulation
 
         # Optimization
         # self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-5) if 'optimizer' not in kwargs else kwargs['optimizer']
@@ -107,6 +111,7 @@ class Trainer(nn.Module):
         
     def one_epoch(self, epoch_id=0):
         self.model.train()
+        self.optimizer.zero_grad()
 
         loss_meter = Meter('loss')
         acc_meter = Meter('acc')
@@ -115,10 +120,13 @@ class Trainer(nn.Module):
         iterator = tqdm_loader(self.loader_train, desc=f'ep. {epoch_id:04d} (lr {lr:.02e})', postfix=progress_dict)
         for i, batch in iterator:
             # TODO implement gradient accumulation
-            self.optimizer.zero_grad()
             output, loss, acc = self.forward(*batch)
             loss.backward()   
-            self.optimizer.step()
+
+            # Make step once in `self.gradient_accumulation` batches 
+            if (i + 1) % self.gradient_accumulation == 0:
+                self.optimizer.step()
+                self.optimizer.zero_grad()
             
             # logging
             loss = loss.item()

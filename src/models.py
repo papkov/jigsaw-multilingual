@@ -11,7 +11,9 @@ class Model(nn.Module):
         
         self.backbone = backbone
         self.dropout = nn.Dropout(dropout)
-        self.linear = nn.Linear(
+        
+        # TODO separate class for head (multiple layers)
+        self.head = nn.Linear(
             in_features=self.backbone.pooler.dense.out_features*2,
             out_features=2,
         )
@@ -30,7 +32,7 @@ class Model(nn.Module):
         
         x = torch.cat((pool_avg, pool_max), 1)
         x = self.dropout(x)
-        x = self.linear(x)
+        x = self.head(x)
         
         return x
     
