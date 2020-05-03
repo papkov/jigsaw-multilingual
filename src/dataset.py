@@ -13,9 +13,9 @@ class Dataset(D.Dataset):
     def __init__(self, fn):
         super().__init__()
         self.fn = fn
-        self.dataset = np.load(fn)
+        self.dataset = np.load(fn, allow_pickle=True)
         self.x = self.dataset['x']
-        self.y = self.dataset['y']
+        self.y = self.dataset['y'].astype(np.uint8)
         self.n_classes = 2
         self.attention_mask = self.dataset['attention_mask']
         
@@ -46,3 +46,11 @@ class Dataset(D.Dataset):
         return WeightedRandomSampler(weights, int(counts.min() * 2))
     
     
+def make_debug(fn, n=32):
+    ds = Dataset(fn)
+    to_save = {}
+    keys = [k for k in ds.dataset.keys()]
+    print(f'Loaded dataset from {fn} with keys {keys}')
+    for k in keys:
+        to_save[k] = ds.dataset[k][:n]
+    np.savez(fn.rstrip('.npz')+f'_debug_{n}.npz', **to_save)
