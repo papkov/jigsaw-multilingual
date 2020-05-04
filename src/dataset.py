@@ -10,12 +10,21 @@ from torch.utils.data.sampler import SubsetRandomSampler, WeightedRandomSampler
 
 
 class Dataset(D.Dataset):
-    def __init__(self, fn):
+    def __init__(self, fn, use_features=False):
         super().__init__()
         self.fn = fn
+        self.use_features
         self.dataset = np.load(fn, allow_pickle=True)
-        self.x = self.dataset['x']
-        self.y = self.dataset['y'].astype(np.uint8)
+        # TODO customize features?
+        try:
+            features_fn = fn.replace('.npz', '')+'_roberta_features.npy')
+            self.features = np.load(features_fn)
+        except:
+            print(features_fn, 'loading failed. Set `self.features = None`, use tokenized input')
+            self.features = None
+
+        self.x = self.features if (use_features and self.features is not None) else self.dataset['x']
+        self.y = (self.dataset['y'] > 0.5).astype(np.uint8)
         self.n_classes = 2
         self.attention_mask = self.dataset['attention_mask']
         
@@ -53,4 +62,4 @@ def make_debug(fn, n=32):
     print(f'Loaded dataset from {fn} with keys {keys}')
     for k in keys:
         to_save[k] = ds.dataset[k][:n]
-    np.savez(fn.rstrip('.npz')+f'_debug_{n}.npz', **to_save)
+    np.savez(fn.replace('.npz', '')+f'_debug_{n}.npz', **to_save)

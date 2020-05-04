@@ -8,15 +8,9 @@ import transformers
 from transformers import XLMRobertaModel, XLMRobertaTokenizer, XLMRobertaConfig
 from transformers import AdamW, get_linear_schedule_with_warmup, get_constant_schedule
 
-def tqdm_loader(loader, **kwargs):
-    """
-    Returns input DataLoader wrapped with tqdm(enumerate(loader))
-    tqdm params: ascii=True, position=0 (accepting other params as kwargs)
-    """
-    return tqdm(enumerate(loader), total=len(loader), ascii=True, position=0, **kwargs)
+from copy import deepcopy
+from utils import *
 
-def accuracy(y, pred):
-    return (y.argmax(1) == pred.argmax(1)).mean()
 
 class Meter:
     """Stores all the incremented elements, their sum and average"""
@@ -101,12 +95,11 @@ class Trainer(nn.Module):
     def forward(self, x, y, attention_masks, *args):
         """Handles transfer to device, computes loss"""
         output = self.model(x.cuda(), attention_masks.cuda(), *args)
-        if self.model.mix:
-            # mix y if model performed mixup
+        if self.model.mix and self.model.training:
+            # mix y if model performed mixup and is in train mode
             y = self.model.mixup.mix_y(y)
         loss = self.criterion(output, y.cuda())
-        acc = accuracy(y.numpy(), output.detach().cpu().numpy())
-        return output, loss, acc
+        return output, loss
 
         
     def one_epoch(self, epoch_id=0):
@@ -120,13 +113,18 @@ class Trainer(nn.Module):
         iterator = tqdm_loader(self.loader_train, desc=f'ep. {epoch_id:04d} (lr {lr:.02e})', postfix=progress_dict)
         for i, batch in iterator:
             # TODO implement gradient accumulation
-            output, loss, acc = self.forward(*batch)
+            output, loss = self.forward(*batch)
             loss.backward()   
 
             # Make step once in `self.gradient_accumulation` batches 
             if (i + 1) % self.gradient_accumulation == 0:
                 self.optimizer.step()
                 self.optimizer.zero_grad()
+
+            # calculate batch accuracy
+            output = output.detach().cpu().numpy()
+            y = batch[1].cpu().numpy()
+            acc = accuracy(y, output)
             
             # logging
             loss = loss.item()
@@ -179,29 +177,33 @@ class Trainer(nn.Module):
         preds = []
         ys = []
         loss_meter = Meter('loss')
-        acc_meter = Meter('acc')
         with torch.no_grad():
             for i, batch in tqdm_loader(loader, desc=desc):
                 # predict
-                output, loss, acc = self.forward(*batch)
+                output, loss = self.forward(*batch)
                 output = output.cpu()
 
                 # log
                 loss_meter.add(loss.item())
-                acc_meter.add(acc)
                 
                 # store
+                # deepcopy handles RuntimeError: received 0 items of ancdata https://github.com/pytorch/pytorch/issues/973#issuecomment-459398189
                 preds.append(output.numpy())
-                ys.append(batch[1].numpy())
+                ys.append(deepcopy(batch[1].numpy()))
 
+        # calculate prediction accuracy
         preds, ys = map(np.concatenate, [preds, ys])
         acc = accuracy(ys, preds)
         return preds, loss_meter.avg, acc
     
     def validate(self):
+        # TODO device management
+        self.model = self.model.cuda()
         return self.predict(self.loader_valid, desc='valid')
     
     def test(self):
+        # TODO device management
+        self.model = self.model.cuda()
         return self.predict(self.loader_test, desc='test')
 
     def save_checkpoint(self, epoch=None, name=None):
@@ -231,5 +233,6 @@ class Trainer(nn.Module):
 
         tqdm.write(f'Loaded model from {path}\nepoch {state["epoch"]}, {status}')
         # TODO TPU
+        # TODO device management
         self.model = self.model.cuda()
     

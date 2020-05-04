@@ -9,6 +9,13 @@ nltk.download('punkt')
 from pandarallel import pandarallel
 pandarallel.initialize(nb_workers=2, progress_bar=False)
 
+from utils import tqdm_loader
+from copy import deepcopy
+import dataset
+import torch.utils.data as D
+from tqdm import tqdm
+import torch
+
 LANGS = {
     'en': 'english',
     'it': 'italian', 
@@ -90,3 +97,41 @@ def read_tok_save_all_roberta(files: list = ['jigsaw-toxic-comment-train.csv',
         print('Processing', fn)
         read_tok_save(os.path.join(path, fn), tokenizer)
         print(f'Finished in {time.time()-s} s\n')
+
+
+def extract_features(backbone, loader, device):
+    """
+    Extract pre-pooling features from `model` from `loader` data
+    """
+    features = []
+    backbone = backbone.to(device)
+    try:
+        with torch.no_grad():
+            for i, batch in tqdm_loader(loader, desc='feature extraction'):
+                x, _ = backbone(input_ids=batch[0].to(device), attention_mask=batch[2].to(device))
+                # two poolings for feature extraction
+                pool_avg = torch.mean(x, 1)
+                pool_max, _ = torch.max(x, 1)
+                x = torch.cat((pool_avg, pool_max), 1)
+                x = x.cpu().numpy()
+                # append features
+                features.append(deepcopy(x))
+    except KeyboardInterrupt:
+        tqdm.write('Interrupted')
+    features = np.concatenate(features)
+    return features
+
+
+def extract_roberta_features_to_file(fn, device, backbone=None, batch_size=128, num_workers=8):
+    """
+    Run `extract_features` for file `fn` and saves the result in identical .npz under different name
+    """
+    # Load dataset
+    ds = dataset.Dataset(fn)
+    # Extract features
+    loader = D.DataLoader(ds, batch_size=batch_size, num_workers=num_workers)
+    backbone = XLMRobertaModel(XLMRobertaConfig.from_pretrained('xlm-roberta-large')) if backbone is None else backbone
+    features = extract_features(backbone, loader, device)
+    # Replace sentenses with respective features in the dataset .npz, save
+    np.save(fn.replace('.npz', '')+'_roberta_features.npy', features)
+

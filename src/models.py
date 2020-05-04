@@ -1,21 +1,39 @@
 from torch import nn
 import torch
 
-class Model(nn.Module):
-
-    def __init__(self, backbone, dropout=0.25, mix=False, alpha=0.4):
+class SimplePoolingHead(nn.Module):
+    def __init__(self, in_features, out_features=2, dropout=0.25, mix=False, alpha=0.4):
         super().__init__()
         # mixup parameters
         self.mix = mix
         self.mixup = Mixup(alpha)
-        
-        self.backbone = backbone
+
+        self.head = nn.Linear(in_features=in_features, out_features=out_features)
         self.dropout = nn.Dropout(dropout)
-        
-        # TODO separate class for head (multiple layers)
-        self.head = nn.Linear(
-            in_features=self.backbone.pooler.dense.out_features*2,
-            out_features=2,
+
+    def forward(self, x):
+        # TODO identify where mixup is most useful
+        if self.mix and self.training:
+            x = self.mixup(x)
+
+        x = self.dropout(x)
+        x = self.head(x)
+        return x
+
+
+class Model(nn.Module):
+
+    def __init__(self, backbone, mix=False, alpha=0.4, head_kwargs={}):
+        super().__init__()
+        # mixup parameters
+        self.mix = mix
+        self.mixup = Mixup(alpha)
+
+        self.backbone = backbone
+        self.head = SimplePoolingHead(
+            in_features=self.backbone.pooler.dense.out_features*2, # 2048
+            dropout=dropout,
+            **head_kwargs
         )
 
     def forward(self, input_ids, attention_masks):
@@ -23,17 +41,16 @@ class Model(nn.Module):
         x, _ = self.backbone(input_ids=input_ids, attention_mask=attention_masks)
         
         # use mixup only if provided and when training
-        # TODO: before of after pooling?
+        # TODO: before of inside the head?
         if self.mix and self.training:
             x = self.mixup(x)
-        
+
+        # two poolings for feature extraction
         pool_avg = torch.mean(x, 1)
         pool_max, _ = torch.max(x, 1)
-        
         x = torch.cat((pool_avg, pool_max), 1)
-        x = self.dropout(x)
-        x = self.head(x)
         
+        x = self.head(x)
         return x
     
 
