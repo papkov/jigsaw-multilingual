@@ -71,9 +71,11 @@ def read_tok_save(fn: str, tokenizer, save_here=False):
     # Process and combine
     input_ids, attention_mask = tokenize(df[text_column].tolist(), tokenizer)
     labels = np.array(df['toxic'] > 0.5, dtype=np.uint8) if 'toxic' in df.columns else np.empty(len(df))  # Threshold toxicity for unintended bias
-    to_save = dict(x=input_ids, y=labels, attention_mask=attention_mask)
-    if 'lang' in columns:
-        to_save['lang'] = df.lang
+    lang = df.lang.tolist() if 'lang' in columns else 'en'
+
+    # Free up memory
+    del df
+    to_save = dict(x=input_ids, y=labels, attention_mask=attention_mask, lang=lang)
     
     # Save
     fn = fn.replace('csv','npz')

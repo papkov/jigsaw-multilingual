@@ -6,7 +6,11 @@ import torch
 import pandas as pd
 import numpy as np
 
+
 from torch.utils.data.sampler import SubsetRandomSampler, WeightedRandomSampler
+from preprocessing import tokenize, clean_text
+
+from transformers import XLMRobertaTokenizer
 
 
 class Dataset(D.Dataset):
@@ -71,3 +75,45 @@ def make_debug(fn, n=32):
     for k in keys:
         to_save[k] = ds.dataset[k][:n]
     np.savez(fn.replace('.npz', '')+f'_debug_{n}.npz', **to_save)
+
+
+
+class TokenizerDataset(Dataset):
+    def __init__(self, fn, tokenizer_name='xlm-roberta-large', max_length=512, clean=True):
+        # Data
+        self.df = pd.read_csv(fn)
+        self.columns = self.df.columns
+        # Handle different column structure
+        self.text_column = 'comment_text' if 'comment_text' in self.columns else 'content'
+        self.df['toxic'] = np.array(self.df['toxic'] > 0.5, dtype=np.uint8) if 'toxic' in self.columns else np.empty(len(self.df))
+        
+        self.n_classes = 2
+        self.clean = clean
+
+        # Tokenizer
+        self.tokenizer_name = tokenizer_name
+        self.tokenizer =  XLMRobertaTokenizer.from_pretrained(tokenizer_name)
+        self.max_length = max_length
+
+
+    def __getitem__(self, i):
+        x = self.df[self.text_column][i]
+        y = self.df['toxic'][i]
+
+        if self.clean:
+            x = clean_text(x)
+
+        # Get tokenized input and attention mask from tokenizer
+        x, am = tokenize([x], self.tokenizer, max_length=self.max_length)
+        x, am = x[0], am[0]
+
+        # Process x and y inherited from base (tokenized) class
+        x = self.process_x(x)
+        y = self.process_y(y)
+
+        # typization
+        x, y, am = map(lambda t: torch.tensor(t).long(), [x, y, am])
+        return x, y, am
+
+    def __len__(self):
+        return len(self.df)
