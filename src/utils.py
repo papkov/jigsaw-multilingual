@@ -3,6 +3,8 @@ import numpy as np
 import torch
 import os
 from tqdm import tqdm 
+from sklearn.metrics import roc_auc_score
+from scipy.special import softmax
 
 def seed_everything(seed=54):
     """https://www.kaggle.com/shonenkov/tpu-inference-super-fast-xlmroberta"""
@@ -28,3 +30,7 @@ def accuracy(y, pred):
     Calculates accuracy from one-hot encoded labels and predictions 
     """
     return (y.argmax(1) == pred.argmax(1)).mean()
+
+def auc_score(y, pred):
+    sm = softmax(pred, 1)
+    return roc_auc_score(y[:,1], sm[:,1])

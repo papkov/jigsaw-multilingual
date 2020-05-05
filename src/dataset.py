@@ -13,15 +13,17 @@ class Dataset(D.Dataset):
     def __init__(self, fn, use_features=False):
         super().__init__()
         self.fn = fn
-        self.use_features
+        self.use_features = use_features
         self.dataset = np.load(fn, allow_pickle=True)
+
+        self.features = None
         # TODO customize features?
-        try:
-            features_fn = fn.replace('.npz', '')+'_roberta_features.npy')
-            self.features = np.load(features_fn)
-        except:
-            print(features_fn, 'loading failed. Set `self.features = None`, use tokenized input')
-            self.features = None
+        if use_features:
+            try:
+                features_fn = fn.replace('.npz', '')+'_roberta_features.npy'
+                self.features = np.load(features_fn)
+            except:
+                print(features_fn, 'loading failed. Set `self.features = None`, use tokenized input')
 
         self.x = self.features if (use_features and self.features is not None) else self.dataset['x']
         self.y = (self.dataset['y'] > 0.5).astype(np.uint8)
@@ -42,7 +44,13 @@ class Dataset(D.Dataset):
         x, y, am = self.x[i], self.y[i], self.attention_mask[i]
         x = self.process_x(x)
         y = self.process_y(y)
-        x, y, am = map(lambda t: torch.tensor(t).long(), [x, y, am])
+        
+        # typization
+        x, y, am = map(torch.tensor, [x, y, am])
+        x = x.float() if self.use_features else x.long()
+        y = y.long()
+        am = am.long()
+
         return x, y, am
     
     def __len__(self):

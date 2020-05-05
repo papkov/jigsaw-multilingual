@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from tqdm import tqdm 
 from torch.utils import data as D
+import torch.nn.functional as F
 import numpy as np
 
 import transformers
@@ -9,7 +10,8 @@ from transformers import XLMRobertaModel, XLMRobertaTokenizer, XLMRobertaConfig
 from transformers import AdamW, get_linear_schedule_with_warmup, get_constant_schedule
 
 from copy import deepcopy
-from utils import *
+from utils import accuracy, auc_score, tqdm_loader
+
 
 
 class Meter:
@@ -50,24 +52,40 @@ class Meter:
 
         return is_best
 
+def ce_loss(x, target):
+    x = x.float()
+    target = target.float()
+    logprobs = torch.nn.functional.log_softmax(x, dim=-1)
+
+    loss = -logprobs * target
+    return loss.sum(-1)
 
 class DenseCrossEntropy(nn.Module):
     """Cross-entropy for one-hot encoded targets"""
     def forward(self, x, target):
-        x = x.float()
-        target = target.float()
-        logprobs = torch.nn.functional.log_softmax(x, dim=-1)
+        loss = ce_loss(x, target)
+        return loss.mean()
 
-        loss = -logprobs * target
-        loss = loss.sum(-1)
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1, gamma=2):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, x, target):
+        loss = ce_loss(x, target)
+        pt = torch.exp(-loss)
+        loss = self.alpha * (1 - pt)**self.gamma * loss
         return loss.mean()
 
 
 class Trainer(nn.Module):
-    def __init__(self, name, model, loader_train, loader_valid, loader_test=None, epochs=5, gradient_accumulation=4, monitor='val_loss', checkpoint_path='../checkpoints/', **kwargs):
+    def __init__(self, name, model, loader_train, loader_valid, loader_test=None, device='cuda', epochs=5, gradient_accumulation=1, monitor='val_loss', checkpoint_path='../checkpoints/', **kwargs):
         super().__init__()
         self.name = name
         self.model = model
+        self.device = device
         self.epochs = epochs
         self.checkpoint_path = checkpoint_path
 
@@ -86,19 +104,19 @@ class Trainer(nn.Module):
         # Optimization
         # self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-5) if 'optimizer' not in kwargs else kwargs['optimizer']
         self.optimizer = AdamW(self.model.parameters(), lr=1e-5) if 'optimizer' not in kwargs else kwargs['optimizer']
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs, eta_min=0, last_epoch=-1) if 'scheduler' not in kwargs else kwargs['scheduler'](self.optimizer)
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs, eta_min=0, last_epoch=-1) if 'scheduler' not in kwargs else kwargs['scheduler']
         self.criterion = DenseCrossEntropy() if 'criterion' not in kwargs else kwargs['criterion']
 
-        self.meters = {m:Meter(m) for m in ['loss', 'val_loss', 'val_acc']}
+        self.meters = {m:Meter(m) for m in ['loss', 'val_loss', 'val_acc', 'val_auc']}
 
 
     def forward(self, x, y, attention_masks, *args):
         """Handles transfer to device, computes loss"""
-        output = self.model(x.cuda(), attention_masks.cuda(), *args)
+        output = self.model(x.to(self.device), attention_masks.to(self.device), *args)
         if self.model.mix and self.model.training:
             # mix y if model performed mixup and is in train mode
             y = self.model.mixup.mix_y(y)
-        loss = self.criterion(output, y.cuda())
+        loss = self.criterion(output, y.to(self.device))
         return output, loss
 
         
@@ -109,7 +127,7 @@ class Trainer(nn.Module):
         loss_meter = Meter('loss')
         acc_meter = Meter('acc')
         progress_dict = dict(loss=0, acc=0)
-        lr = self.scheduler.get_lr()[-1]
+        lr = self.scheduler.get_last_lr()[-1]
         iterator = tqdm_loader(self.loader_train, desc=f'ep. {epoch_id:04d} (lr {lr:.02e})', postfix=progress_dict)
         for i, batch in iterator:
             # TODO implement gradient accumulation
@@ -136,7 +154,7 @@ class Trainer(nn.Module):
         
     def fit(self, epochs=None):
         # TODO distributed training and TPU
-        self.model = self.model.cuda()
+        self.model = self.model.to(self.device)
 
         if epochs is None:
             epochs = self.epochs
@@ -149,12 +167,14 @@ class Trainer(nn.Module):
                 self.meters['loss'].add(loss)
 
                 # Validate
-                output, val_loss, val_acc = self.validate()
+                output, val_loss, val_acc, val_auc = self.validate()
                 self.meters['val_loss'].add(val_loss)
                 self.meters['val_acc'].add(val_acc)
+                self.meters['val_auc'].add(val_auc)
 
                 # Show val results
-                tqdm.write(f'Epoch {epoch} complete. val loss (avg): {val_loss:.4f}, val acc: {val_acc:.4f}')
+                status = ', '.join([f'{name}={meter.last:.4f}' for name, meter in self.meters.items()])
+                tqdm.write(f'Epoch {epoch} complete. {status}')
 
                 # Save checkpoint
                 name = self.name
@@ -194,16 +214,15 @@ class Trainer(nn.Module):
         # calculate prediction accuracy
         preds, ys = map(np.concatenate, [preds, ys])
         acc = accuracy(ys, preds)
-        return preds, loss_meter.avg, acc
+        auc = auc_score(ys, preds)
+        return preds, loss_meter.avg, acc, auc
     
     def validate(self):
-        # TODO device management
-        self.model = self.model.cuda()
+        self.model = self.model.to(self.device)
         return self.predict(self.loader_valid, desc='valid')
     
     def test(self):
-        # TODO device management
-        self.model = self.model.cuda()
+        self.model = self.model.to(self.device)
         return self.predict(self.loader_test, desc='test')
 
     def save_checkpoint(self, epoch=None, name=None):
@@ -233,6 +252,5 @@ class Trainer(nn.Module):
 
         tqdm.write(f'Loaded model from {path}\nepoch {state["epoch"]}, {status}')
         # TODO TPU
-        # TODO device management
-        self.model = self.model.cuda()
+        self.model = self.model.to(self.device)
     

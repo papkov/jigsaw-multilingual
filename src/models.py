@@ -2,16 +2,18 @@ from torch import nn
 import torch
 
 class SimplePoolingHead(nn.Module):
-    def __init__(self, in_features, out_features=2, dropout=0.25, mix=False, alpha=0.4):
+    def __init__(self, in_features=3072, out_features=2, dropout=0.5, mix=False, alpha=0.4):
         super().__init__()
         # mixup parameters
+        self.in_features = in_features
+        self.out_features = out_features
         self.mix = mix
         self.mixup = Mixup(alpha)
 
         self.head = nn.Linear(in_features=in_features, out_features=out_features)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, x, *args):
         # TODO identify where mixup is most useful
         if self.mix and self.training:
             x = self.mixup(x)
@@ -19,6 +21,30 @@ class SimplePoolingHead(nn.Module):
         x = self.dropout(x)
         x = self.head(x)
         return x
+
+
+class CustomPoolingHead(SimplePoolingHead):
+    def __init__(self, dropout=0.5, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.head = torch.nn.Sequential(
+            torch.nn.BatchNorm1d(self.in_features),
+            torch.nn.Linear(self.in_features, self.in_features),
+            torch.nn.ReLU(),
+            torch.nn.Dropout(dropout),
+            torch.nn.BatchNorm1d(self.in_features),
+            torch.nn.Linear(self.in_features, self.out_features)
+        )
+
+
+class TransformersPoolingHead(SimplePoolingHead):
+    def __init__(self, dropout=0.5, *args, **kwargs):
+        super().__init__(dropout=dropout, *args, **kwargs)
+        self.head = torch.nn.Sequential(
+            torch.nn.Linear(self.in_features, self.in_features),
+            torch.nn.Tanh(),
+            torch.nn.Dropout(dropout),
+            torch.nn.Linear(self.in_features, self.out_features)
+        )
 
 
 class Model(nn.Module):
@@ -31,8 +57,7 @@ class Model(nn.Module):
 
         self.backbone = backbone
         self.head = SimplePoolingHead(
-            in_features=self.backbone.pooler.dense.out_features*2, # 2048
-            dropout=dropout,
+            in_features=self.backbone.pooler.dense.out_features*3, # 3072
             **head_kwargs
         )
 
@@ -48,7 +73,8 @@ class Model(nn.Module):
         # two poolings for feature extraction
         pool_avg = torch.mean(x, 1)
         pool_max, _ = torch.max(x, 1)
-        x = torch.cat((pool_avg, pool_max), 1)
+        cls_token = x[:,0,:]
+        x = torch.cat((cls_token, pool_avg, pool_max), 1)
         
         x = self.head(x)
         return x

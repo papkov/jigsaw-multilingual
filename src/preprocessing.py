@@ -112,7 +112,8 @@ def extract_features(backbone, loader, device):
                 # two poolings for feature extraction
                 pool_avg = torch.mean(x, 1)
                 pool_max, _ = torch.max(x, 1)
-                x = torch.cat((pool_avg, pool_max), 1)
+                cls_token = x[:,0,:]
+                x = torch.cat((cls_token, pool_avg, pool_max), 1)
                 x = x.cpu().numpy()
                 # append features
                 features.append(deepcopy(x))
