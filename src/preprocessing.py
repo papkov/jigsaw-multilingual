@@ -58,7 +58,7 @@ def tokenize(texts, tokenizer, max_length=512):
     return np.array(tokenized['input_ids']), np.array(tokenized['attention_mask'])
 
 
-def read_tok_save(fn: str, tokenizer):
+def read_tok_save(fn: str, tokenizer, save_here=False):
     """
     Read, tokenize and save as .npz tokenized texts and labels
     """
@@ -76,18 +76,22 @@ def read_tok_save(fn: str, tokenizer):
         to_save['lang'] = df.lang
     
     # Save
-    fn = fn.rstrip('csv')+'npz'
+    fn = fn.replace('csv','npz')
+    if save_here:
+        fn = fn.split('/')[-1]
     print(f'Saving to {fn} dict with {to_save.keys()}')
     np.savez(fn, **to_save)
 
     
-def read_tok_save_all_roberta(files: list = ['jigsaw-toxic-comment-train.csv',
-                                             'jigsaw-unintended-bias-train.csv',
-                                             'validation.csv',
+def read_tok_save_all_roberta(files: list = ['validation.csv',
                                              'test.csv',
+                                             'jigsaw-toxic-comment-train.csv',
+                                             'jigsaw-unintended-bias-train.csv',
                                             ],
                               path: str = '../input/',
-                              tokenizer_name='xlm-roberta-large'):
+                              tokenizer_name='xlm-roberta-large',
+                              save_here=False,
+                              ):
     """
     Read, tokenize and save all the files with XLM Roberta tokenizer
     """
@@ -95,7 +99,7 @@ def read_tok_save_all_roberta(files: list = ['jigsaw-toxic-comment-train.csv',
     for fn in files:
         s = time.time()
         print('Processing', fn)
-        read_tok_save(os.path.join(path, fn), tokenizer)
+        read_tok_save(os.path.join(path, fn), tokenizer, save_here=save_here)
         print(f'Finished in {time.time()-s} s\n')
 
 
