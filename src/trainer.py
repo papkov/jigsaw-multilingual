@@ -48,7 +48,7 @@ class Meter:
     def is_best(self):
         """Check if the last epoch was the best according to the meter"""
         is_best = (self.name.endswith('loss') and self.extremum == 'min') or \
-                  (self.name.endswith('acc') and self.extremum == 'max')
+                  ((self.name.endswith('acc') or self.name.endswith('auc')) and self.extremum == 'max')
 
         return is_best
 
@@ -62,7 +62,14 @@ def ce_loss(x, target):
 
 class DenseCrossEntropy(nn.Module):
     """Cross-entropy for one-hot encoded targets"""
+    def __init__(self, label_smoothing=0):
+        super().__init__()
+        self.label_smoothing = label_smoothing
+
     def forward(self, x, target):
+        if self.label_smoothing > 0:
+            # supposes 2 classes
+            target = (1-self.label_smoothing) * target + self.label_smoothing / 2
         loss = ce_loss(x, target)
         return loss.mean()
 
@@ -81,7 +88,7 @@ class FocalLoss(nn.Module):
 
 
 class Trainer(nn.Module):
-    def __init__(self, name, model, loader_train, loader_valid, loader_test=None, device='cuda', epochs=5, gradient_accumulation=1, monitor='val_loss', checkpoint_path='../checkpoints/', **kwargs):
+    def __init__(self, name, model, loader_train, loader_valid, loader_test=None, device='cuda', epochs=5, gradient_accumulation=1, monitor='val_auc', checkpoint_path='../checkpoints/', **kwargs):
         super().__init__()
         self.name = name
         self.model = model
@@ -113,9 +120,9 @@ class Trainer(nn.Module):
     def forward(self, x, y, attention_masks, *args):
         """Handles transfer to device, computes loss"""
         output = self.model(x.to(self.device), attention_masks.to(self.device), *args)
-        if self.model.mix and self.model.training:
-            # mix y if model performed mixup and is in train mode
-            y = self.model.mixup.mix_y(y)
+        if self.model.mix is not None and self.model.training:
+            # mix y if model performed mix and is in train mode
+            y = self.model.mix.interpolate(y)
         loss = self.criterion(output, y.to(self.device))
         return output, loss
 

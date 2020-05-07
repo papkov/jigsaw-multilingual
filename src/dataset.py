@@ -12,6 +12,11 @@ from preprocessing import tokenize, clean_text
 
 from transformers import XLMRobertaTokenizer
 
+def weighted_sampler(y):
+    labels, counts = np.unique(y, return_counts=True)
+    weights = counts[::-1] / counts.sum()
+    weights = np.array([weights[i] for i in y])
+    return WeightedRandomSampler(weights, int(counts.min() * 2))
 
 class Dataset(D.Dataset):
     def __init__(self, fn, use_features=False):
@@ -61,10 +66,7 @@ class Dataset(D.Dataset):
         return len(self.y)
     
     def weighted_sampler(self):
-        labels, counts = np.unique(self.y, return_counts=True)
-        weights = counts[::-1] / counts.sum()
-        weights = np.array([weights[i] for i in self.y])
-        return WeightedRandomSampler(weights, int(counts.min() * 2))
+        return weighted_sampler(self.y)
     
     
 def make_debug(fn, n=32):
@@ -85,7 +87,7 @@ class TokenizerDataset(Dataset):
         self.columns = self.df.columns
         # Handle different column structure
         self.text_column = 'comment_text' if 'comment_text' in self.columns else 'content'
-        self.df['toxic'] = np.array(self.df['toxic'] > 0.5, dtype=np.uint8) if 'toxic' in self.columns else np.empty(len(self.df))
+        self.df['toxic'] = np.array(self.df['toxic'] > 0.5 if 'toxic' in self.columns else np.zeros(len(self.df)), dtype=np.uint8)
         
         self.n_classes = 2
         self.clean = clean

@@ -1,22 +1,23 @@
 from torch import nn
 import torch
 
+from mix import *
+
 class SimplePoolingHead(nn.Module):
-    def __init__(self, in_features=3072, out_features=2, dropout=0.5, mix=False, alpha=0.4):
+    def __init__(self, in_features=3072, out_features=2, dropout=0.5, mix=None):
         super().__init__()
         # mixup parameters
         self.in_features = in_features
         self.out_features = out_features
         self.mix = mix
-        self.mixup = Mixup(alpha)
 
         self.head = nn.Linear(in_features=in_features, out_features=out_features)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, *args):
         # TODO identify where mixup is most useful
-        if self.mix and self.training:
-            x = self.mixup(x)
+        if self.mix is not None and self.training:
+            x = self.mix(x)
 
         x = self.dropout(x)
         x = self.head(x)
@@ -24,24 +25,25 @@ class SimplePoolingHead(nn.Module):
 
 
 class CustomPoolingHead(SimplePoolingHead):
+    """AUC 0.906, do not touch"""
     def __init__(self, dropout=0.5, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(dropout=dropout, *args, **kwargs)
         self.head = torch.nn.Sequential(
             torch.nn.BatchNorm1d(self.in_features),
-            torch.nn.Linear(self.in_features, self.in_features),
+            torch.nn.Linear(self.in_features, self.in_features, bias=False),
             torch.nn.ReLU(),
             torch.nn.Dropout(dropout),
             torch.nn.BatchNorm1d(self.in_features),
-            torch.nn.Linear(self.in_features, self.out_features)
+            torch.nn.Linear(self.in_features, self.out_features, bias=False)
         )
 
 
 class TransformersPoolingHead(SimplePoolingHead):
-    def __init__(self, dropout=0.5, *args, **kwargs):
+    def __init__(self, dropout=0.5, relu=False, *args, **kwargs):
         super().__init__(dropout=dropout, *args, **kwargs)
         self.head = torch.nn.Sequential(
             torch.nn.Linear(self.in_features, self.in_features),
-            torch.nn.Tanh(),
+            torch.nn.ReLU() if relu else torch.nn.Tanh(),
             torch.nn.Dropout(dropout),
             torch.nn.Linear(self.in_features, self.out_features)
         )
@@ -49,11 +51,10 @@ class TransformersPoolingHead(SimplePoolingHead):
 
 class Model(nn.Module):
 
-    def __init__(self, backbone, mix=False, alpha=0.4, head_kwargs={}):
+    def __init__(self, backbone, mix=None, head_kwargs={}):
         super().__init__()
         # mixup parameters
         self.mix = mix
-        self.mixup = Mixup(alpha)
 
         self.backbone = backbone
         self.head = SimplePoolingHead(
@@ -67,8 +68,8 @@ class Model(nn.Module):
         
         # use mixup only if provided and when training
         # TODO: before of inside the head?
-        if self.mix and self.training:
-            x = self.mixup(x)
+        if self.mix is not None and self.training:
+            x = self.mix(x)
 
         # two poolings for feature extraction
         pool_avg = torch.mean(x, 1)
@@ -78,45 +79,5 @@ class Model(nn.Module):
         
         x = self.head(x)
         return x
-    
 
-class Mixup:
-    def __init__(self, alpha=0.4):
-        self.idx = None
-        self.lam = None
-        self.set_alpha(alpha)
-    
-    def set_alpha(self, alpha):
-        self.beta = torch.distributions.beta.Beta(alpha, alpha)
-        
-    def __call__(self, x):
-        bs = x.shape[0]
-        idx = torch.randperm(bs)
 
-        # sample lambda
-        lam = self.beta.sample(torch.tensor([bs]))
-        # ensure that all the elements are > 0.5
-        lam, _ = torch.stack([lam, 1-lam], 0).max(0)
-        # unsqueeze lam to match x shape in other dimensions (except batch) 
-        for i, s in enumerate(x.shape[1:]):
-            lam.unsqueeze_(-1)
-        
-        # store last idx and lam for mixing y
-        self.idx = idx
-        self.lam = lam.squeeze()
-
-        # mix x and its permuted version
-        lamd = lam.to(x.device)
-        return x * lamd + x[idx] * (1-lamd)
-
-    def mix_y(self, y):
-        if self.lam is None:
-            raise ValueError
-        
-        # unsqueeze lam to match y shape in other dimensions (except batch)
-        for i, s in enumerate(y.shape[1:]):
-            self.lam.unsqueeze_(-1)
-
-        lamd = self.lam.to(y.device)
-        return y * lamd + y[self.idx] * (1-lamd)
-        

@@ -6,8 +6,16 @@ import time
 import re
 import nltk
 nltk.download('punkt')
-from pandarallel import pandarallel
-pandarallel.initialize(nb_workers=2, progress_bar=False)
+
+try:
+    from pandarallel import pandarallel
+    pandarallel.initialize(nb_workers=2, progress_bar=False)
+    use_pandarallel = True
+except ModuleNotFoundError:
+    print('padnarallel not installed')    
+    use_pandarallel = False
+
+
 
 from utils import tqdm_loader
 from copy import deepcopy
@@ -66,7 +74,10 @@ def read_tok_save(fn: str, tokenizer, save_here=False):
     df = pd.read_csv(fn)
     columns = df.columns
     text_column = 'comment_text' if 'comment_text' in columns else 'content'
-    df[text_column] = df.parallel_apply(lambda x: clean_text(x[text_column], x['lang'] if 'lang' in columns else 'en'), axis=1)
+    if use_pandarallel:
+        df[text_column] = df.parallel_apply(lambda x: clean_text(x[text_column], x['lang'] if 'lang' in columns else 'en'), axis=1)
+    else:
+        df[text_column] = df.apply(lambda x: clean_text(x[text_column], x['lang'] if 'lang' in columns else 'en'), axis=1)
     
     # Process and combine
     input_ids, attention_mask = tokenize(df[text_column].tolist(), tokenizer)
