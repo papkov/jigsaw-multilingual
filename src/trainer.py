@@ -12,6 +12,13 @@ from transformers import AdamW, get_linear_schedule_with_warmup, get_constant_sc
 from copy import deepcopy
 from utils import accuracy, auc_score, tqdm_loader
 
+try:
+    from apex import amp
+    AMP_AVAILABLE = True
+except ModuleNotFoundError:
+    print('Install apex for mixed precision training: https://github.com/NVIDIA/apex')
+    AMP_AVAILABLE = False
+
 
 
 class Meter:
@@ -88,13 +95,21 @@ class FocalLoss(nn.Module):
 
 
 class Trainer(nn.Module):
-    def __init__(self, name, model, loader_train, loader_valid, loader_test=None, device='cuda', epochs=5, gradient_accumulation=1, monitor='val_auc', checkpoint_path='../checkpoints/', **kwargs):
+    def __init__(self, name, model, loader_train, loader_valid, loader_test=None, device='cuda', epochs=5, 
+                 gradient_accumulation=1, opt_level=None,
+                 monitor='val_auc', checkpoint_path='../checkpoints/',
+                 **kwargs):
         super().__init__()
         self.name = name
         self.model = model
         self.device = device
         self.epochs = epochs
         self.checkpoint_path = checkpoint_path
+
+        assert opt_level in [None, 'O0', 'O1', 'O2', 'O3']
+        self.opt_level = opt_level
+        self.amp = self.opt_level is not None and AMP_AVAILABLE
+
 
         # Monitoring
         self.monitor = monitor
@@ -115,6 +130,12 @@ class Trainer(nn.Module):
         self.criterion = DenseCrossEntropy() if 'criterion' not in kwargs else kwargs['criterion']
 
         self.meters = {m:Meter(m) for m in ['loss', 'val_loss', 'val_acc', 'val_auc']}
+
+        # Mixed precision
+        if self.amp:
+            print(f'Use automatic mixed precision at opt_level={self.opt_level}')
+            self.model.to(self.device)
+            self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level=self.opt_level)
 
 
     def forward(self, x, y, attention_masks, *args):
@@ -137,9 +158,14 @@ class Trainer(nn.Module):
         lr = self.scheduler.get_last_lr()[-1]
         iterator = tqdm_loader(self.loader_train, desc=f'ep. {epoch_id:04d} (lr {lr:.02e})', postfix=progress_dict)
         for i, batch in iterator:
-            # TODO implement gradient accumulation
             output, loss = self.forward(*batch)
-            loss.backward()   
+
+            if self.amp:
+                # Handle auto mixed precision
+                with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                    scaled_loss.backward()
+            else:
+                loss.backward()   
 
             # Make step once in `self.gradient_accumulation` batches 
             if (i + 1) % self.gradient_accumulation == 0:
@@ -156,6 +182,9 @@ class Trainer(nn.Module):
             loss_meter.add(loss)
             acc_meter.add(acc)
             iterator.set_postfix(dict(loss=loss_meter.avg, acc=acc_meter.avg))
+
+        # Post-epoch actions
+        self.scheduler.step()
 
         return loss
         
@@ -188,9 +217,6 @@ class Trainer(nn.Module):
                 if not self.meters[self.monitor].is_best():
                     name += '_last'
                 self.save_checkpoint(name=name, epoch=epoch)
-
-                # Post-epoch actions
-                self.scheduler.step()
             
             # Test
             # if self.loader_test is not None:
@@ -239,6 +265,9 @@ class Trainer(nn.Module):
             'optimizer': self.optimizer.state_dict(),
             'scheduler': self.scheduler.state_dict(),
         }
+        # Handle auto mixed precision
+        if self.amp:
+            state.update({'amp': amp.state_dict(), 'opt_level': self.opt_level})
         # Add metrics to the dict
         state.update({name: meter.last for name, meter in self.meters.items()})
         path = f'{self.checkpoint_path}/{self.name if name is None else name}.pth'
@@ -252,10 +281,18 @@ class Trainer(nn.Module):
         for key, value in state.items():
             if key in ['model', 'optimizer', 'scheduler']:
                 getattr(self, key).load_state_dict(value)
+            elif key == 'amp':
+                if AMP_AVAILABLE:
+                    amp.load_state_dict(state['amp'])
+                    print(f'Load state in automatic mixed precision mode at opt_level={self.opt_level}')
+                    assert self.opt_level == state['opt_level'], f"opt_level of the Trainer should be the same {state['opt_level']}, because amp will not be reinitialized"
+                else:
+                    print('Checkpoint was saved in automatic mixed precision mode, but it is not available now')
+            elif key in ['epoch', 'opt_level']:
+                pass
             else:
-                if key != 'epoch':
-                    self.meters[key].add(value)
-                    status += f'{key}: {value:.4f} '
+                self.meters[key].add(value)
+                status += f'{key}: {value:.4f} '
 
         tqdm.write(f'Loaded model from {path}\nepoch {state["epoch"]}, {status}')
         # TODO TPU

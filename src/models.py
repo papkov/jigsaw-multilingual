@@ -51,16 +51,13 @@ class TransformersPoolingHead(SimplePoolingHead):
 
 class Model(nn.Module):
 
-    def __init__(self, backbone, mix=None, head_kwargs={}):
+    def __init__(self, backbone, mix=None, head=SimplePoolingHead()):
         super().__init__()
         # mixup parameters
         self.mix = mix
 
         self.backbone = backbone
-        self.head = SimplePoolingHead(
-            in_features=self.backbone.pooler.dense.out_features*3, # 3072
-            **head_kwargs
-        )
+        self.head = head
 
     def forward(self, input_ids, attention_masks):
         batch_size, max_len = input_ids.shape

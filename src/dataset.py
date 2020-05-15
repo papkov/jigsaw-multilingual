@@ -19,10 +19,11 @@ def weighted_sampler(y):
     return WeightedRandomSampler(weights, int(counts.min() * 2))
 
 class Dataset(D.Dataset):
-    def __init__(self, fn, use_features=False):
+    def __init__(self, fn, use_features=False, feature_slice=slice(0,3072)):
         super().__init__()
         self.fn = fn
         self.use_features = use_features
+        self.feature_slice = feature_slice
         self.dataset = np.load(fn, allow_pickle=True)
 
         self.features = None
@@ -30,7 +31,7 @@ class Dataset(D.Dataset):
         if use_features:
             try:
                 features_fn = fn.replace('.npz', '')+'_roberta_features.npy'
-                self.features = np.load(features_fn)
+                self.features = np.load(features_fn)[:,self.feature_slice]
             except:
                 print(features_fn, 'loading failed. Set `self.features = None`, use tokenized input')
 
