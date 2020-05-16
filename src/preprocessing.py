@@ -17,9 +17,8 @@ except ModuleNotFoundError:
 
 
 
-from utils import tqdm_loader
+from utility import tqdm_loader
 from copy import deepcopy
-import dataset
 import torch.utils.data as D
 from tqdm import tqdm
 import torch
@@ -145,6 +144,7 @@ def extract_roberta_features_to_file(fn, device, backbone=None, batch_size=128, 
     Run `extract_features` for file `fn` and saves the result in identical .npz under different name
     """
     # Load dataset
+    import dataset
     ds = dataset.Dataset(fn)
     # Extract features
     loader = D.DataLoader(ds, batch_size=batch_size, num_workers=num_workers)

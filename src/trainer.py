@@ -10,7 +10,7 @@ from transformers import XLMRobertaModel, XLMRobertaTokenizer, XLMRobertaConfig
 from transformers import AdamW, get_linear_schedule_with_warmup, get_constant_schedule
 
 from copy import deepcopy
-from utils import accuracy, auc_score, tqdm_loader
+from utility import accuracy, auc_score, tqdm_loader
 
 try:
     from apex import amp
