@@ -1,15 +1,17 @@
 from torch import nn
 import torch
+from tqdm import tqdm
 
 from mix import *
 
 class SimplePoolingHead(nn.Module):
-    def __init__(self, in_features=3072, out_features=2, dropout=0.5, mix=None):
+    def __init__(self, in_features=3072, out_features=2, dropout=0.5, mix=None, freeze_bn=False):
         super().__init__()
         # mixup parameters
         self.in_features = in_features
         self.out_features = out_features
         self.mix = mix
+        self.freeze_bn = freeze_bn
 
         self.head = nn.Linear(in_features=in_features, out_features=out_features)
         self.dropout = nn.Dropout(dropout)
@@ -22,6 +24,18 @@ class SimplePoolingHead(nn.Module):
         x = self.dropout(x)
         x = self.head(x)
         return x
+
+    def _freeze_bn(self):
+        '''Freeze BatchNorm layers.'''
+        for layer in self.modules():
+            if isinstance(layer, nn.BatchNorm2d):
+                layer.eval()
+
+    def train(self, mode=True):
+        super().train(mode=mode)
+        if self.freeze_bn:
+            tqdm.write('Freeze BatchNorm in the head (set to eval)')
+            self._freeze_bn()
 
 
 class CustomPoolingHead(SimplePoolingHead):

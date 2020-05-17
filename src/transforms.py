@@ -184,9 +184,22 @@ class Compose:
     Composes several transforms together
     """
     def __init__(self, *args):
-        self.transforms = args[0]
+        self.transforms = args
     
     def __call__(self, x):
         for t in self.transforms:
             x = t(x)
         return x
+
+
+def compose_transforms(transforms=None):
+    """Safely converse list of transforms to Compose object"""
+    if transforms is not None:
+        if isinstance(transforms, Compose): 
+            return transforms
+        elif isinstance(transforms, list):
+            return Compose(*transforms)
+        else:
+            raise ValueError
+    else:
+        return None

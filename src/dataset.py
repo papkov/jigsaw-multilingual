@@ -9,8 +9,10 @@ import numpy as np
 
 from torch.utils.data.sampler import SubsetRandomSampler, WeightedRandomSampler
 from preprocessing import tokenize, clean_text
+from transforms import Compose, compose_transforms
 
 from transformers import XLMRobertaTokenizer
+
 
 def weighted_sampler(y):
     labels, counts = np.unique(y, return_counts=True)
@@ -18,8 +20,9 @@ def weighted_sampler(y):
     weights = np.array([weights[i] for i in y])
     return WeightedRandomSampler(weights, int(counts.min() * 2))
 
+
 class Dataset(D.Dataset):
-    def __init__(self, fn, use_features=False, feature_slice=slice(0,3072)):
+    def __init__(self, fn, use_features=False, feature_slice=slice(0,3072), transforms=None):
         super().__init__()
         self.fn = fn
         self.use_features = use_features
@@ -40,8 +43,12 @@ class Dataset(D.Dataset):
         self.n_classes = 2
         self.attention_mask = self.dataset['attention_mask']
         
+        self.transforms = compose_transforms(transforms)
+        
     def process_x(self, x):
         """What to do with x before batching (for augmentations)"""
+        if self.transforms is not None:
+            x = self.transforms(x)
         return x
 
     def process_y(self, y):
@@ -80,16 +87,16 @@ def make_debug(fn, n=32):
     np.savez(fn.replace('.npz', '')+f'_debug_{n}.npz', **to_save)
 
 
-
 class TokenizerDataset(Dataset):
-    def __init__(self, fn, tokenizer_name='xlm-roberta-large', max_length=512, clean=True):
+    def __init__(self, fn, tokenizer_name='xlm-roberta-large', max_length=512, clean=True, text_column='comment_text', transforms=None):
         # Data
-        self.df = pd.read_csv(fn)
-        self.columns = self.df.columns
+        self.dataset = pd.read_csv(fn)
+        self.columns = self.dataset.columns
         # Handle different column structure
-        self.text_column = 'comment_text' if 'comment_text' in self.columns else 'content'
-        self.df['toxic'] = np.array(self.df['toxic'] > 0.5 if 'toxic' in self.columns else np.zeros(len(self.df)), dtype=np.uint8)
-        
+        assert text_column in self.columns, f'{text_column} is not among columns {self.columns}'
+        self.text_column = text_column
+        self.y = np.array(self.dataset['toxic'] > 0.5 if 'toxic' in self.columns else np.zeros(len(self.dataset)), dtype=np.uint8)
+
         self.n_classes = 2
         self.clean = clean
 
@@ -97,26 +104,31 @@ class TokenizerDataset(Dataset):
         self.tokenizer_name = tokenizer_name
         self.tokenizer =  XLMRobertaTokenizer.from_pretrained(tokenizer_name)
         self.max_length = max_length
+        self.transforms = compose_transforms(transforms)
 
 
     def __getitem__(self, i):
-        x = self.df[self.text_column][i]
-        y = self.df['toxic'][i]
+        x = self.dataset[self.text_column][i]
+        y = self.y[i]
 
         if self.clean:
             x = clean_text(x)
-
-        # Get tokenized input and attention mask from tokenizer
-        x, am = tokenize([x], self.tokenizer, max_length=self.max_length)
-        x, am = x[0], am[0]
 
         # Process x and y inherited from base (tokenized) class
         x = self.process_x(x)
         y = self.process_y(y)
 
+        # Get tokenized input and attention mask from tokenizer
+        x, am = tokenize([x], self.tokenizer, max_length=self.max_length)
+        x, am = x[0], am[0]
+
         # typization
         x, y, am = map(lambda t: torch.tensor(t).long(), [x, y, am])
         return x, y, am
 
-    def __len__(self):
-        return len(self.df)
+
+class ConcatDataset(D.ConcatDataset):
+    """Concat dataset implementing weighted sampler"""
+    def weighted_sampler(self):
+        y = np.concatenate([d.y for d in self.datasets])
+        return weighted_sampler(y) 
