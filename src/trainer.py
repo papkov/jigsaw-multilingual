@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import numpy as np
 
 import transformers
-from transformers import XLMRobertaModel, XLMRobertaTokenizer, XLMRobertaConfig
+from transformers import AutoModel, AutoTokenizer, XLMRobertaModel, XLMRobertaTokenizer, XLMRobertaConfig
 from transformers import AdamW, get_linear_schedule_with_warmup, get_constant_schedule
 
 from copy import deepcopy

@@ -108,7 +108,7 @@ def read_tok_save_all_roberta(files: list = ['validation.csv',
     """
     Read, tokenize and save all the files with XLM Roberta tokenizer
     """
-    tokenizer = transformers.XLMRobertaTokenizer.from_pretrained(tokenizer_name)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_name)
     for fn in files:
         s = time.time()
         print('Processing', fn)
@@ -148,7 +148,7 @@ def extract_roberta_features_to_file(fn, device, backbone=None, batch_size=128, 
     ds = dataset.Dataset(fn)
     # Extract features
     loader = D.DataLoader(ds, batch_size=batch_size, num_workers=num_workers)
-    backbone = XLMRobertaModel(XLMRobertaConfig.from_pretrained('xlm-roberta-large')) if backbone is None else backbone
+    backbone = transformers.AutoModel.from_pretrained('xlm-roberta-large') if backbone is None else backbone
     features = extract_features(backbone, loader, device)
     # Replace sentenses with respective features in the dataset .npz, save
     np.save(fn.replace('.npz', '')+'_roberta_features.npy', features)

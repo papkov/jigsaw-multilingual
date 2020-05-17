@@ -11,7 +11,7 @@ from torch.utils.data.sampler import SubsetRandomSampler, WeightedRandomSampler
 from preprocessing import tokenize, clean_text
 from transforms import Compose, compose_transforms
 
-from transformers import XLMRobertaTokenizer
+from transformers import AutoTokenizer, XLMRobertaTokenizer
 
 
 def weighted_sampler(y):
@@ -102,7 +102,7 @@ class TokenizerDataset(Dataset):
 
         # Tokenizer
         self.tokenizer_name = tokenizer_name
-        self.tokenizer =  XLMRobertaTokenizer.from_pretrained(tokenizer_name)
+        self.tokenizer =  AutoTokenizer.from_pretrained(tokenizer_name)
         self.max_length = max_length
         self.transforms = compose_transforms(transforms)
 
