@@ -6,11 +6,12 @@ import torch.nn.functional as F
 import numpy as np
 
 import transformers
-from transformers import XLMRobertaModel, XLMRobertaTokenizer, XLMRobertaConfig
+from transformers import AutoModel, AutoTokenizer, XLMRobertaModel, XLMRobertaTokenizer, XLMRobertaConfig
 from transformers import AdamW, get_linear_schedule_with_warmup, get_constant_schedule
 
 from copy import deepcopy
 from utility import accuracy, auc_score, tqdm_loader
+import traceback
 
 try:
     from apex import amp
@@ -224,6 +225,10 @@ class Trainer(nn.Module):
 
         except KeyboardInterrupt:
             tqdm.write('Interrupted')
+        
+        except RuntimeError as e:
+            tb_str = traceback.format_exception(etype=type(e), value=e, tb=e.__traceback__)
+            print("".join(tb_str))
 
     def predict(self, loader, desc='predict'):
         self.model.eval()
@@ -274,12 +279,14 @@ class Trainer(nn.Module):
         torch.save(state, path)
         tqdm.write(f'Saved model to {path}')
         
-    def load_checkpoint(self, path=None):
+    def load_checkpoint(self, path=None, ignore=[]):
         path =  f'{self.checkpoint_path}/{self.name}.pth' if path is None else path
-        state = torch.load(path)
+        state = torch.load(path, map_location='cpu')
         status = ''
         for key, value in state.items():
-            if key in ['model', 'optimizer', 'scheduler']:
+            if key in ignore:
+                pass
+            elif key in ['model', 'optimizer', 'scheduler']:
                 getattr(self, key).load_state_dict(value)
             elif key == 'amp':
                 if AMP_AVAILABLE:
@@ -295,6 +302,13 @@ class Trainer(nn.Module):
                 status += f'{key}: {value:.4f} '
 
         tqdm.write(f'Loaded model from {path}\nepoch {state["epoch"]}, {status}')
+        
+        # Move to device
         # TODO TPU
         self.model = self.model.to(self.device)
+        # move optimizer to device
+        for state in self.optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(self.device)
     
