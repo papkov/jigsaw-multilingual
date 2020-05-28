@@ -60,12 +60,12 @@ def clean_text(text, lang='en'):
     return text.strip()
 
 
-def tokenize(texts, tokenizer, max_length=512):
+def tokenize(texts, tokenizer, max_length):
     tokenized = tokenizer.batch_encode_plus(texts, max_length=max_length, return_attention_masks=True, pad_to_max_length=True, add_special_tokens=True)
     return np.array(tokenized['input_ids']), np.array(tokenized['attention_mask'])
 
 
-def read_tok_save(fn: str, tokenizer, save_here=False):
+def read_tok_save(fn: str, tokenizer, max_length, save_here=False, for_text_generation=False):
     """
     Read, tokenize and save as .npz tokenized texts and labels
     """
@@ -79,7 +79,10 @@ def read_tok_save(fn: str, tokenizer, save_here=False):
         df[text_column] = df.apply(lambda x: clean_text(x[text_column], x['lang'] if 'lang' in columns else 'en'), axis=1)
     
     # Process and combine
-    input_ids, attention_mask = tokenize(df[text_column].tolist(), tokenizer)
+    input_ids, attention_mask = tokenize(df[text_column].tolist(), tokenizer, max_length=max_length)
+    # if for_text_generation:
+    #     labels = np.array(df['toxic'], dtype=np.float32) if 'toxic' in df.columns else np.empty(len(df))  # Threshold toxicity for unintended bias
+    # TODO: use toxic level and type for the text generation pipeline!
     labels = np.array(df['toxic'] > 0.5, dtype=np.uint8) if 'toxic' in df.columns else np.empty(len(df))  # Threshold toxicity for unintended bias
     lang = df.lang.tolist() if 'lang' in columns else 'en'
 
@@ -94,7 +97,7 @@ def read_tok_save(fn: str, tokenizer, save_here=False):
     print(f'Saving to {fn} dict with {to_save.keys()}')
     np.savez(fn, **to_save)
 
-    
+
 def read_tok_save_all_roberta(files: list = ['validation.csv',
                                              'test.csv',
                                              'jigsaw-toxic-comment-train.csv',
@@ -103,6 +106,8 @@ def read_tok_save_all_roberta(files: list = ['validation.csv',
                               path: str = '../input/',
                               tokenizer_name='xlm-roberta-large',
                               save_here=False,
+                              for_text_generator_model=False,
+                              max_length=128,
                               ):
     """
     Read, tokenize and save all the files with XLM Roberta tokenizer
@@ -111,7 +116,7 @@ def read_tok_save_all_roberta(files: list = ['validation.csv',
     for fn in files:
         s = time.time()
         print('Processing', fn)
-        read_tok_save(os.path.join(path, fn), tokenizer, save_here=save_here)
+        read_tok_save(os.path.join(path, fn), tokenizer, save_here=save_here, for_text_generation=for_text_generator_model, max_length=128)
         print(f'Finished in {time.time()-s} s\n')
 
 
