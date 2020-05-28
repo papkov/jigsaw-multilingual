@@ -109,6 +109,9 @@ class Trainer(nn.Module):
 
         assert opt_level in [None, 'O0', 'O1', 'O2', 'O3']
         self.opt_level = opt_level
+        if device is 'cpu' and self.opt_level is not None: # avoid using apx on CPU!
+            print("Warning: when running on CPU, opt_level has to be None -> automatically set to None!")
+            self.opt_level = None
         self.amp = self.opt_level is not None and AMP_AVAILABLE
 
 
