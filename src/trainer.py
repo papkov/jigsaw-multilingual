@@ -138,6 +138,12 @@ class Trainer(nn.Module):
             self.model.to(self.device)
             self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level=self.opt_level)
 
+        if self.device is 'cpu':
+            # to avoid memory leak on cpu!
+            torch.backends.cudnn.enabled = False
+            torch.backends.cudnn.deterministic = False
+            torch.backends.cudnn.benchmark = False
+
 
     def forward(self, x, y, attention_masks, *args):
         """Handles transfer to device, computes loss"""
