@@ -1,6 +1,4 @@
-from torch import nn
-import torch
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from mix import *
 
@@ -120,5 +118,4 @@ class Model(nn.Module):
         
         x = self.head(x)
         return x
-
 

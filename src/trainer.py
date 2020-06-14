@@ -11,7 +11,7 @@ from transformers import AutoModel, AutoTokenizer, XLMRobertaModel, XLMRobertaTo
 from transformers import AdamW, get_linear_schedule_with_warmup, get_constant_schedule
 
 from copy import deepcopy
-from util import accuracy, auc_score, tqdm_loader
+from utility import accuracy, auc_score, tqdm_loader
 import traceback
 
 try:
@@ -158,6 +158,9 @@ class Trainer(nn.Module):
         self.save = save
         self.save_params = save_params
         self.opt_level = opt_level
+        if device is 'cpu' and self.opt_level is not None: # avoid using apx on CPU!
+            print("Warning: when running on CPU, opt_level has to be None -> automatically set to None!")
+            self.opt_level = None
         self.amp = self.opt_level is not None and AMP_AVAILABLE
         self.scheduler_on_epoch_end = scheduler_on_epoch_end
 
@@ -189,6 +192,12 @@ class Trainer(nn.Module):
             print(f'Use automatic mixed precision at opt_level={self.opt_level}')
             self.model.to(self.device)
             self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level=self.opt_level)
+
+        if self.device is 'cpu':
+            # to avoid memory leak on cpu!
+            torch.backends.cudnn.enabled = False
+            torch.backends.cudnn.deterministic = False
+            torch.backends.cudnn.benchmark = False
 
 
     def forward(self, x, y, attention_masks, *args):
