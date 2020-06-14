@@ -1,7 +1,7 @@
 pandarallel==1.4.8
 torch==1.5.0
 torchvision==0.6.0a0+82fd1c8
-git+https://github.com/huggingface/transformers.git@releases/tag/v3.7.1
+git+https://github.com/huggingface/transformers@v2.9.1
 # TODO: specify appex version 0.1
 git+https://github.com/NVIDIA/apex.git
 polyglot==16.7.4 # to detect languages in the training set
