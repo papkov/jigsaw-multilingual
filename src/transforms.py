@@ -34,15 +34,20 @@ class BaseTransform:
         self.was_applied = False
 
     def get_sentences(self, text, lang='en'):
+        # TODO optimize to call once in a series of transforms
         return sent_tokenize(text, self.LANGS.get(lang, 'english'))
 
     def __call__(self, x):
-        self.last_call = x
-        xp = x if self.inplace else deepcopy(x)
-        if np.random.uniform() < self.p:
-            self.was_applied = True
-            return self.apply(xp)
-        return xp
+        try:
+            self.last_call = x
+            xp = x if self.inplace else deepcopy(x)
+            if np.random.uniform() < self.p:
+                self.was_applied = True
+                return self.apply(xp)
+            return xp
+        except Exception as e:
+            print(f'{type(self)} was failed to apply to [{x}] due to [{e}]')
+            return x
 
     def apply(self, x):
         raise NotImplementedError
@@ -55,6 +60,73 @@ class ShuffleSentences(BaseTransform):
         sentences = self.get_sentences(x)
         random.shuffle(sentences)
         return ' '.join(sentences)
+
+
+class PickRandomSentence(BaseTransform):
+
+    def apply(self, x):
+        # TODO pass language
+        sentences = self.get_sentences(x)
+        return np.random.choice(sentences)
+
+
+class PickLastSentence(BaseTransform):
+
+    def apply(self, x):
+        # TODO pass language
+        sentences = self.get_sentences(x)
+        return sentences[-1]
+
+class PickFirstAndLastSentence(BaseTransform):
+
+    def apply(self, x):
+        # TODO pass language
+        sentences = self.get_sentences(x)
+        if len(sentences) > 1:
+            sentences = [sentences[0], sentences[-1]] 
+        return ' '.join(sentences)
+
+
+class DropFirstSentence(BaseTransform):
+
+    def apply(self, x):
+        # TODO pass language
+        sentences = self.get_sentences(x)
+        if len(sentences) > 1:
+            sentences = sentences[1:]
+        return ' '.join(sentences)
+
+
+class DropRandomSentence(BaseTransform):
+
+    def apply(self, x):
+        # TODO pass language
+        sentences = self.get_sentences(x)
+        if len(sentences) > 1:
+            sentences.pop(np.random.choice(len(sentences)))
+        return ' '.join(sentences)
+
+
+class Truncate(BaseTransform):
+
+    def __init__(self, p=1, from_begin=32, from_end=64, **kwargs):
+        super().__init__(p=p, **kwargs)
+        self.from_begin = from_begin
+        self.from_end = from_end
+
+    def apply(self, x):
+
+        words = x.split()
+        n_words = len(words)
+
+        words_begin = words[:self.from_begin]
+        n_words_begin = len(words_begin)
+        # Prevent overlapping
+        from_end = min(self.from_end, n_words-n_words_begin)
+        words_end = words[-from_end:] if from_end > 0 else []
+
+        words = words_begin + words_end
+        return ' '.join(words)
 
 
 class SwapWords(BaseTransform):

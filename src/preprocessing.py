@@ -17,7 +17,7 @@ except ModuleNotFoundError:
 
 
 
-from utils import tqdm_loader
+from util import tqdm_loader
 from copy import deepcopy
 import dataset
 import torch.utils.data as D
@@ -52,7 +52,25 @@ def exclude_duplicate_sentences(text, lang='en'):
 def clean_text(text, lang='en'):
     """https://www.kaggle.com/shonenkov/tpu-inference-super-fast-xlmroberta"""
     text = str(text)
-    text = re.sub(r'[0-9"]', '', text)
+
+    # Some hand-crafted rules based on manual inspection
+    # text = re.sub(r'n00b', r'noob', text)
+    # text = re.sub(r'l33t', r'leet', text)
+    # text = re.sub(r'1337', r'leet', text)
+    # text = re.sub(r'[Ff][uU\*][cC\*][Kk\*]', r'fuck', text)
+    # text = re.sub(r'[Jj][eE\*][sS\*][uU\*][sS\*]', r'jesus', text)
+    # text = re.sub(r'[Bb][iI\*][tT\*][cC\*][hH\*]', r'bitch', text)
+    # text = re.sub(r'[Cc][uU\*][nN\*][tT\*]', r'cunt', text)
+    # text = re.sub(r'[Ss][hH\*][iI\*][tT\*]', r'shit', text)
+    # text = re.sub(r'[Dd][aA\*][mM\*][nN\*]', r'damn', text)
+    # text = re.sub(r'[aA][sS\*][sS\*]', r'ass', text)
+    # text = re.sub(r'[aA][sS\*][sS\*][hH\*][oO\*][lL\*][eE\*]', r'asshole', text)
+    # text = re.sub(r'[\@\#\$\%\^]{3,}', r'fuck', text) # questionable
+    # text = re.sub(r' \*\*\*\* ', r' fuck ', text) # questionable
+    # text = re.sub(r'\*{4,}', r'', text) # weird stars
+    # text = re.sub(r'(\w)\1{3,}', r'\1', text) # letters repeating 3+ times
+
+    # text = re.sub(r'[0-9"]', '', text)
     text = re.sub(r'#[\S]+\b', '', text)
     text = re.sub(r'@[\S]+\b', '', text)
     text = re.sub(r'https?\S+', '', text)

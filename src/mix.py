@@ -82,7 +82,7 @@ class Cutmix(Mix):
 
     def generate_mask(self, x):
         """2D random mask according to lambda"""
-        mask = np.ones_like(x.cpu().numpy(), dtype=bool)
+        mask = np.ones_like(x.detach().cpu().numpy(), dtype=bool)
         bs, size = x.shape
         for i, lam in enumerate(self.lam.squeeze()):
             prop = int(lam * size)

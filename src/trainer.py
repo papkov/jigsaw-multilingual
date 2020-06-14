@@ -3,6 +3,7 @@ from torch import nn
 from tqdm import tqdm 
 from torch.utils import data as D
 import torch.nn.functional as F
+from torchcontrib.optim import SWA
 import numpy as np
 
 import transformers
@@ -10,7 +11,7 @@ from transformers import AutoModel, AutoTokenizer, XLMRobertaModel, XLMRobertaTo
 from transformers import AdamW, get_linear_schedule_with_warmup, get_constant_schedule
 
 from copy import deepcopy
-from utils import accuracy, auc_score, tqdm_loader
+from util import accuracy, auc_score, tqdm_loader
 import traceback
 
 try:
@@ -61,12 +62,37 @@ class Meter:
         return is_best
 
 def ce_loss(x, target):
+    """
+    ce_loss(torch.tensor([[0.7, 0.3],
+                          [0.9, 0.1],
+                          [0.3, 0.7]]),
+            torch.tensor([[1,   0  ],
+                          [1,   0  ],
+                          [1,   0  ]]))
+    >>> tensor([0.5130, 0.3711, 0.9130])
+    """
     x = x.float()
     target = target.float()
     logprobs = torch.nn.functional.log_softmax(x, dim=-1)
 
     loss = -logprobs * target
     return loss.sum(-1)
+
+def dice_loss(x, target, smooth=1):
+    """
+    https://gist.github.com/weiliu620/52d140b22685cf9552da4899e2160183#gistcomment-3025867
+    dice_loss(torch.tensor([[0.7, 0.3],
+                            [0.9, 0.1],
+                            [0.3, 0.7]]),
+              torch.tensor([[1,   0  ],
+                            [1,   0  ],
+                            [1,   0  ]]))
+    >>> tensor([0.2000, 0.0667, 0.4667])
+    """
+    numerator = 2 * torch.sum(x * target, -1)
+    denominator = torch.sum(x + target, -1)
+    return 1 - (numerator + smooth) / (denominator + smooth)
+
 
 class DenseCrossEntropy(nn.Module):
     """Cross-entropy for one-hot encoded targets"""
@@ -79,6 +105,22 @@ class DenseCrossEntropy(nn.Module):
             # supposes 2 classes
             target = (1-self.label_smoothing) * target + self.label_smoothing / 2
         loss = ce_loss(x, target)
+        return loss.mean()
+
+
+class DiceDenseCrossEntropy(nn.Module):
+    def __init__(self, dice=1, ce=1, label_smoothing=0):
+        super().__init__()
+        self.label_smoothing = label_smoothing
+        self.dice = dice
+        self.ce = ce
+    
+    def forward(self, x, target):
+        if self.label_smoothing > 0:
+            # supposes 2 classes
+            target = (1-self.label_smoothing) * target + self.label_smoothing / 2
+        
+        loss = self.ce * ce_loss(x, target) + self.dice * dice_loss(x, target)
         return loss.mean()
 
 
@@ -97,19 +139,27 @@ class FocalLoss(nn.Module):
 
 class Trainer(nn.Module):
     def __init__(self, name, model, loader_train, loader_valid, loader_test=None, device='cuda', epochs=5, 
-                 gradient_accumulation=1, opt_level=None,
+                 gradient_accumulation=1, opt_level=None, 
+                 save='best', save_params=['model'],
                  monitor='val_auc', checkpoint_path='../checkpoints/',
+                 scheduler_on_epoch_end=False, num_warmup_steps=0,
                  **kwargs):
         super().__init__()
+
+        assert opt_level in [None, 'O0', 'O1', 'O2', 'O3']
+        assert save in [None, 'all', 'best']
+
         self.name = name
         self.model = model
         self.device = device
         self.epochs = epochs
+        self.epoch = 0
         self.checkpoint_path = checkpoint_path
-
-        assert opt_level in [None, 'O0', 'O1', 'O2', 'O3']
+        self.save = save
+        self.save_params = save_params
         self.opt_level = opt_level
         self.amp = self.opt_level is not None and AMP_AVAILABLE
+        self.scheduler_on_epoch_end = scheduler_on_epoch_end
 
 
         # Monitoring
@@ -127,7 +177,9 @@ class Trainer(nn.Module):
         # Optimization
         # self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-5) if 'optimizer' not in kwargs else kwargs['optimizer']
         self.optimizer = AdamW(self.model.parameters(), lr=1e-5) if 'optimizer' not in kwargs else kwargs['optimizer']
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs, eta_min=0, last_epoch=-1) if 'scheduler' not in kwargs else kwargs['scheduler']
+        # self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs, eta_min=0, last_epoch=-1) if 'scheduler' not in kwargs else kwargs['scheduler']
+        num_training_steps = self.epochs if self.scheduler_on_epoch_end else int(self.epochs * len(self.loader_train) / self.gradient_accumulation)
+        self.scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps) if 'scheduler' not in kwargs else kwargs['scheduler']
         self.criterion = DenseCrossEntropy() if 'criterion' not in kwargs else kwargs['criterion']
 
         self.meters = {m:Meter(m) for m in ['loss', 'val_loss', 'val_acc', 'val_auc']}
@@ -142,9 +194,14 @@ class Trainer(nn.Module):
     def forward(self, x, y, attention_masks, *args):
         """Handles transfer to device, computes loss"""
         output = self.model(x.to(self.device), attention_masks.to(self.device), *args)
+        
+        # mix y if model performed mix (in head or body) and is in train mode
         if self.model.mix is not None and self.model.training:
-            # mix y if model performed mix and is in train mode
             y = self.model.mix.interpolate(y)
+        if hasattr(self.model.head, 'mix'):
+            if self.model.head.mix is not None and self.model.training:
+                y = self.model.head.mix.interpolate(y)
+
         loss = self.criterion(output, y.to(self.device))
         return output, loss
 
@@ -152,14 +209,15 @@ class Trainer(nn.Module):
     def one_epoch(self, epoch_id=0):
         self.model.train()
         self.optimizer.zero_grad()
+        # np.random.seed(epoch_id * self.loader_train.num_workers) # for workers' reinitialization (* not ro repeat)
 
         loss_meter = Meter('loss')
         acc_meter = Meter('acc')
-        progress_dict = dict(loss=0, acc=0)
-        lr = self.scheduler.get_last_lr()[-1]
-        iterator = tqdm_loader(self.loader_train, desc=f'ep. {epoch_id:04d} (lr {lr:.02e})', postfix=progress_dict)
+        progress_dict = dict(loss=0, acc=0, lr=self.scheduler.get_last_lr()[-1])
+        iterator = tqdm_loader(self.loader_train, desc=f'ep. {epoch_id:04d}', postfix=progress_dict)
         for i, batch in iterator:
             output, loss = self.forward(*batch)
+            # loss = loss / self.gradient_accumulation
 
             if self.amp:
                 # Handle auto mixed precision
@@ -172,6 +230,10 @@ class Trainer(nn.Module):
             if (i + 1) % self.gradient_accumulation == 0:
                 self.optimizer.step()
                 self.optimizer.zero_grad()
+                if not self.scheduler_on_epoch_end:
+                    self.scheduler.step()
+            
+           
 
             # calculate batch accuracy
             output = output.detach().cpu().numpy()
@@ -182,12 +244,19 @@ class Trainer(nn.Module):
             loss = loss.item()
             loss_meter.add(loss)
             acc_meter.add(acc)
-            iterator.set_postfix(dict(loss=loss_meter.avg, acc=acc_meter.avg))
+            iterator.set_postfix(dict(loss=loss_meter.avg, acc=acc_meter.avg, lr=self.scheduler.get_last_lr()[-1]))
+
 
         # Post-epoch actions
-        self.scheduler.step()
+        # Make scheduler step if using constant LR over epoch
+        if self.scheduler_on_epoch_end:
+            self.scheduler.step()
 
-        return loss
+        # Update SWA in the end of an epoch
+        if isinstance(self.optimizer, SWA):
+            self.optimizer.update_swa()
+
+        return loss_meter.avg
         
     def fit(self, epochs=None):
         # TODO distributed training and TPU
@@ -203,6 +272,10 @@ class Trainer(nn.Module):
                 loss = self.one_epoch(epoch)
                 self.meters['loss'].add(loss)
 
+                if isinstance(self.optimizer, SWA): 
+                    # Swap SWA weights for validation and saving
+                    self.optimizer.swap_swa_sgd()
+
                 # Validate
                 output, val_loss, val_acc, val_auc = self.validate()
                 self.meters['val_loss'].add(val_loss)
@@ -215,9 +288,16 @@ class Trainer(nn.Module):
 
                 # Save checkpoint
                 name = self.name
-                if not self.meters[self.monitor].is_best():
+                if not self.meters[self.monitor].is_best() and epoch != 0:
+                    # save last epoch anyway; 0th epoch is saved under self.name
                     name += '_last'
-                self.save_checkpoint(name=name, epoch=epoch)
+                if self.save == 'all' or (self.save == 'best' and (self.meters[self.monitor].is_best() or self.epoch == 0)):
+                    # Either save everyting or best (monitor is best or 0th epoch) or none
+                    self.save_checkpoint(name=name, epoch=epoch)
+
+                if isinstance(self.optimizer, SWA): 
+                    # Swap SWA weights back for training
+                    self.optimizer.swap_swa_sgd()
             
             # Test
             # if self.loader_test is not None:
@@ -252,7 +332,11 @@ class Trainer(nn.Module):
         # calculate prediction accuracy
         preds, ys = map(np.concatenate, [preds, ys])
         acc = accuracy(ys, preds)
-        auc = auc_score(ys, preds)
+        try:
+            auc = auc_score(ys, preds)
+        except ValueError:
+            # Catch for test (no labels)
+            auc = 0
         return preds, loss_meter.avg, acc, auc
     
     def validate(self):
@@ -266,10 +350,13 @@ class Trainer(nn.Module):
     def save_checkpoint(self, epoch=None, name=None):
         state = {
             'epoch': epoch,
-            'model': self.model.state_dict(),
-            'optimizer': self.optimizer.state_dict(),
-            'scheduler': self.scheduler.state_dict(),
+            # 'model': self.model.state_dict(),
+            # 'optimizer': self.optimizer.state_dict(),
+            # 'scheduler': self.scheduler.state_dict(),
         }
+        # Save parameters
+        for param in self.save_params:
+            state.update({param: eval(f'self.{param}.state_dict()')})
         # Handle auto mixed precision
         if self.amp:
             state.update({'amp': amp.state_dict(), 'opt_level': self.opt_level})
@@ -311,4 +398,8 @@ class Trainer(nn.Module):
             for k, v in state.items():
                 if isinstance(v, torch.Tensor):
                     state[k] = v.to(self.device)
+
+    def reset_scheduler(self):
+        num_training_steps = self.epochs if self.scheduler_on_epoch_end else int(self.epochs * len(self.loader_train) / self.gradient_accumulation)
+        self.scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=0, num_training_steps=num_training_steps) 
     
