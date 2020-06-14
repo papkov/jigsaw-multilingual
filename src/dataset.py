@@ -1,17 +1,26 @@
 import os
 import sys
+import time
+import pickle
+import logging
+from filelock import FileLock
+
+from tqdm.auto import tqdm
+
 import torch.utils.data as D
 import torch
 
 import pandas as pd
 import numpy as np
 
-
 from torch.utils.data.sampler import SubsetRandomSampler, WeightedRandomSampler
 from preprocessing import tokenize, clean_text
 from transforms import Compose, compose_transforms
 
-from transformers import AutoTokenizer, XLMRobertaTokenizer
+from transformers import AutoTokenizer, XLMRobertaTokenizer, PreTrainedTokenizer, DataCollatorForLanguageModeling
+from typing import Dict, List
+
+logger = logging.getLogger(__name__)
 
 
 def weighted_sampler(y):
@@ -131,4 +140,113 @@ class ConcatDataset(D.ConcatDataset):
     """Concat dataset implementing weighted sampler"""
     def weighted_sampler(self):
         y = np.concatenate([d.y for d in self.datasets])
-        return weighted_sampler(y) 
+        return weighted_sampler(y)
+
+
+class ToxicDFDataset(D.Dataset):
+    """ tokenizes the comments from the pandas DataFrame
+        adapted from transformers TextDataset
+    """
+
+    def __init__(
+            self, tokenizer: PreTrainedTokenizer, file_path: str, block_size: int, overwrite_cache=False, debug=False,
+    ):
+        logger.info("ToxicDFDataSet: file_path=%s", file_path)
+        assert os.path.isfile(file_path)
+
+        block_size = block_size - tokenizer.num_special_tokens_to_add(pair=False)
+
+        directory, filename = os.path.split(file_path)
+        cached_features_file = os.path.join(
+            directory, "cached_lm_{}_{}_{}".format(tokenizer.__class__.__name__, str(block_size), filename, ),
+        )
+
+        # Make sure only the first process in distributed training processes the dataset,
+        # and the others will use the cache.
+        lock_path = cached_features_file + ".lock"
+        with FileLock(lock_path):
+
+            if os.path.exists(cached_features_file) and not overwrite_cache:
+                start = time.time()
+                with open(cached_features_file, "rb") as handle:
+                    self.examples, self.toxicity_levels = pickle.load(handle)
+                    assert len(self.examples) == len(self.toxicity_levels)
+                logger.info(
+                    f"Loading features from cached file {cached_features_file} [took %.3f s]", time.time() - start
+                )
+
+            else:
+                logger.info(f"Creating features from dataset file at {directory}")
+
+                # with open(file_path, encoding="utf-8") as f:
+                #     text = f.read()
+                if debug:
+                    # to be able to run it on CPU and low resources for debugging purposes
+                    toxic_df = pd.read_pickle(file_path).loc[:100]
+                else:
+                    toxic_df = pd.read_pickle(file_path)
+
+                logger.info("Read the text.")
+
+                def convert_tokens_to_ids(row):
+                    return tokenizer.convert_tokens_to_ids(tokenizer.tokenize(row['comment_text']))
+
+                # tokenize the comments
+                tqdm.pandas(desc='Tokenize')
+                toxic_df['token_ids'] = toxic_df.progress_apply(convert_tokens_to_ids, axis=1)
+
+                logger.info("Summary of the token lengths: \n", toxic_df['token_ids'].apply(lambda x: len(x)).describe())
+
+                # create a list of examples from the toxic comments
+                self.examples = []
+                self.toxicity_levels = []
+                for i, row in toxic_df.iterrows():
+                    tokenized_text = row['token_ids']
+                    if len(tokenized_text) <= block_size:
+                        self.examples.append(tokenizer.build_inputs_with_special_tokens(tokenized_text))
+                        self.toxicity_levels.append(row['toxic'])
+                    else:  # chunk up bigger entries
+                        for i in range(0, len(tokenized_text) - block_size + 1,
+                                       block_size):  # Truncate in block of block_size
+                            self.examples.append(
+                                tokenizer.build_inputs_with_special_tokens(tokenized_text[i: i + block_size])
+                            )
+                            self.toxicity_levels.append(row['toxic'])
+
+                del toxic_df
+
+                assert len(self.examples) == len(self.toxicity_levels)
+
+                # Note that we are losing the last truncated example here for the sake of simplicity (no padding)
+                # If your dataset is small, first you should loook for a bigger one :-) and second you
+                # can change this behavior by adding (model specific) padding.
+
+                start = time.time()
+                with open(cached_features_file, "wb") as handle:
+                    pickle.dump([self.examples, self.toxicity_levels], handle, protocol=pickle.HIGHEST_PROTOCOL)
+                logger.info(
+                    "Saving features into cached file %s [took %.3f s]", cached_features_file, time.time() - start
+                )
+
+    def __len__(self):
+        assert len(self.examples) == len(self.toxicity_levels)
+        return len(self.examples)
+
+    def __getitem__(self, i) -> torch.Tensor:
+        """ returns tuple of tensors, first the tokenized toxic comment, second the toxicity level """
+        # return torch.tensor(self.examples[i], dtype=torch.long)
+        x, y = map(lambda t: torch.tensor(t, dtype=torch.long), [self.examples[i], self.toxicity_levels[i]])
+        return x, y
+
+
+class DataCollatorForConditionedLanguageModeling(DataCollatorForLanguageModeling):
+    def collate_batch(self, examples: List[torch.Tensor]) -> Dict[str, torch.Tensor]:
+        examples_0 = [e[0] for e in examples]
+        examples_1 = [e[1] for e in examples]
+        batch = self._tensorize_batch(examples_0)
+        batch_condition = torch.tensor(examples_1, dtype=torch.float)
+        if self.mlm:
+            inputs, labels = self.mask_tokens(batch)
+            return {"input_ids": inputs, "masked_lm_labels": labels, "conditional_var": batch_condition}
+        else:
+            return {"input_ids": batch, "labels": batch, "conditional_var": batch_condition}

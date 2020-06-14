@@ -1,8 +1,7 @@
-from torch import nn
-import torch
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from mix import *
+
 
 class SimplePoolingHead(nn.Module):
     def __init__(self, in_features=3072, out_features=2, dropout=0.5, mix=None, freeze_bn=False):
@@ -90,5 +89,4 @@ class Model(nn.Module):
         
         x = self.head(x)
         return x
-
 
